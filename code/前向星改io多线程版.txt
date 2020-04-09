@@ -10,16 +10,22 @@
 #include<thread>
 #include<set>
 #include <functional> 
+#include<sys/mman.h>
+#include <sys/types.h>
+#include<sys/stat.h>
+#include<fcntl.h>
+#include<unistd.h>
+#include<stdio.h>
 
 using namespace std;
 
 const int N = 560000;
-const int n=280000;
+const int n=300000;
 
 struct EDGE
 {
 	int u, v, next;            //w表示权重，后期可加上表示money，u与v表示有向顶点对
-}edge[N];        //链式前向星结构体
+}edge[n];        //链式前向星结构体
 
 struct CMP
 {
@@ -47,13 +53,10 @@ public:
 private:
 	string testFile_;
 	string resFile_;
-	//vector<vector<int>> result;
-	//int data[N];
-	//int pos[N];           //下标到id的映射
 	int cnt;
 	int edgeCount;           //当前边总数
-	int subdata;
 	int len;
+	//int subdata;
 	int*  data = new int[N];
 	int*  pos = new int[N];
 	int*  arr = new int[N];
@@ -92,7 +95,90 @@ void searchEdge::addEdge(int &u, int& v)
 	head[u] = edgeCount++;
 }
 
-/*
+bool searchEdge::loadTestData()
+{
+	FILE* fp = fopen(testFile_.c_str(), "r");
+	if (fp == NULL)
+	{
+		printf("Open File Failure!\n");
+		exit(1);
+	}
+	else
+	{
+		while (fscanf(fp, "%d,%d,%d", &id, &subdata, &money)!=EOF)
+		{
+			//fscanf(fp, "%d,%d,%d", &id, &subdata, &money);
+			++cnt;
+			data[cnt] = id;
+			head[cnt] = -1;
+			arr[cnt] = pos[cnt] = data[cnt];
+			++cnt;
+			data[cnt] = subdata;
+			head[cnt] = -1;
+			arr[cnt] = pos[cnt] = data[cnt];
+		}
+	}
+	sort(data, data + cnt);                   //排序
+	len = unique(data, data + cnt) - data;     //得到去重后的长度
+	for (int j = 0; j < cnt; j++)
+	{
+		pos[j] = lower_bound(data, data + len, pos[j]) - data;               //一个pos代表唯一一个值，每个pos的值都可以通过data[pos[i
+		++j;
+		pos[j] = lower_bound(data, data + len, pos[j]) - data;
+		addEdge(pos[j - 1], pos[j]);
+	}
+	fclose(fp);
+	return true;
+}
+
+bool searchEdge::loadTestData()
+{
+	ifstream infile(testFile_.c_str());
+	string lineTitle;
+	if (!infile) {
+		cout << "打开测试文件失败" << endl;
+		exit(0);
+	}
+	while (infile) {
+		string line;
+		getline(infile, line);
+		if (line.size() > 0) {
+			stringstream sin(line);
+			int id;
+			char ch;
+			char c = sin.peek();
+			if (int(c) != -1) {
+				sin >> id;
+				sin >> ch;
+				sin >> subdata;
+				++cnt;				
+				data[cnt] = id;               //将id读入放到data数组中
+				head[cnt] = -1;
+				arr[cnt] = pos[cnt] = data[cnt];
+				++cnt;
+				data[cnt] = subdata;          //将aim读入到第二列
+				head[cnt] = -1;
+				arr[cnt] = pos[cnt] = data[cnt];
+			}
+			else {
+				cout << "测试文件数据格式不正确" << endl;
+				return false;
+			}
+		}
+	}
+	sort(data, data + cnt);                   //排序
+	len = unique(data, data + cnt) - data;     //得到去重后的长度
+	for (int j = 0; j < cnt; j++)
+	{
+		pos[j] = lower_bound(data, data + len, pos[j]) - data;               //一个pos代表唯一一个值，每个pos的值都可以通过data[pos[i
+		++j;
+		pos[j] = lower_bound(data, data + len, pos[j]) - data;
+		addEdge(pos[j - 1], pos[j]);
+	}
+	infile.close();
+	return true;
+}
+
 bool searchEdge::loadTestData()
 {
 	int fd = open(testFile_.c_str(), O_RDWR | O_CREAT,0666);
@@ -151,102 +237,6 @@ bool searchEdge::loadTestData()
 	}
 	return true;
 }
-*/
-
-bool searchEdge::loadTestData()
-{
-	ifstream infile(testFile_.c_str());
-	string lineTitle;
-	if (!infile) {
-		cout << "打开测试文件失败" << endl;
-		exit(0);
-	}
-	while (infile) {
-		string line;
-		getline(infile, line);
-		if (line.size() > 0) {
-			stringstream sin(line);
-			int id;
-			char ch;
-			char c = sin.peek();
-			if (int(c) != -1) {
-				sin >> id;
-				sin >> ch;
-				sin >> subdata;
-				++cnt;				
-				data[cnt] = id;               //将id读入放到data数组中
-				head[cnt] = -1;
-				arr[cnt] = pos[cnt] = data[cnt];
-				++cnt;
-				data[cnt] = subdata;          //将aim读入到第二列
-				head[cnt] = -1;
-				arr[cnt] = pos[cnt] = data[cnt];
-			}
-			else {
-				cout << "测试文件数据格式不正确" << endl;
-				return false;
-			}
-		}
-	}
-	sort(data, data + cnt);                   //排序
-	len = unique(data, data + cnt) - data;     //得到去重后的长度
-	for (int j = 0; j < cnt; j++)
-	{
-		pos[j] = lower_bound(data, data + len, pos[j]) - data;               //一个pos代表唯一一个值，每个pos的值都可以通过data[pos[i
-		++j;
-		pos[j] = lower_bound(data, data + len, pos[j]) - data;
-		addEdge(pos[j - 1], pos[j]);
-	}
-	infile.close();
-	return true;
-}
-
-/*学长版
-void searchEdge::dfs(int count, int index, int min, vector<int>& path, int result_subindex)
-{
-if (index == min && count != 0)
-	{
-		if (count >= 3)
-		{
-			vector<int> temp_path(path.begin(), path.begin() + count);
-			if (!checkRepeat(temp_path))
-				return;
-			result_sub[result_subindex].push_back(path);
-		}
-		return;
-	}
-	else
-	{
-		if (count == 6)
-		{
-			for (int i = head[index]; ~i; i = edge[i].next)
-			{
-				if (edge[i].v == min)
-				{
-					path[count] = data[index];
-					dfs(count+1, edge[i].v, min, path,result_subindex);
-				}
-			}
-		}
-		else
-		{
-			for (int i = head[index]; ~i; i = edge[i].next)
-			{
-				if (edge[i].v >= min)
-				{
-					if (visit[edge[i].v] == 0 || edge[i].v == min)
-					{
-						visit[index] = 1;
-						path[count] = data[index];
-						dfs(count+1, edge[i].v, min, path,result_subindex);
-						visit[index] = 0;
-					}
-				}
-			}
-		}
-	}
-}
-*/
 
 void searchEdge::dfs(int count, int index,int min, vector<int>& path, int result_subindex)
 {
@@ -300,23 +290,6 @@ bool searchEdge::checkRepeat(vector<int> &temp_path) {
 	return true;
 }
 
-/*单线程版
-void searchEdge::findRing()
-{
-	for (int i = 0; i < len; ++i)
-	{
-		//visit = vector<bool>(len, false);
-		vector<int> path(7, -1);
-		path[0]=data[i];
-		dfs(1, i, i, path);
-	}
-	delete[] arr;
-	delete[] head;
-	delete[] data;
-	delete[] pos;
-	sort(result.begin(), result.end(), cmp);
-}
-*/
 void searchEdge::circleSearch(int start, int end, int result_subindex) {
 	for (int i = start; i < end; i++) {
 		//visit=vector<bool>(len,false);
@@ -391,7 +364,7 @@ int main()
 	cout << "ready to work" << endl;
 	
 	clock_t end1, end2, end3;
-	string testFile = "test_data1.txt";
+	string testFile = "test_data5.txt";
 	string resultFile = "/home/yinjie/result.txt";
 	searchEdge my_searchMap(testFile, resultFile);
 	
