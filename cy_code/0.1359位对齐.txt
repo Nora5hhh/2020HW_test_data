@@ -1,0 +1,411 @@
+/**
+ * IOT_team 成渝赛区
+ */
+#include <bits/stdc++.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <mutex>
+using namespace std;
+//*****************************************************定义常量**********************************************//
+const int THREAD_COUNT = 10;
+const int PATCH_COUNT = 512;
+const unsigned int MAX_NODE=200000;
+const unsigned int MAX_DEGREE=50;
+const unsigned int MAX_P2=250;
+const unsigned int MAX_P3=3000;
+const unsigned int u32 = 32;
+const unsigned int u1 = 0x1;
+const unsigned int sizeTable[11] = {9, 99, 999, 9999, 99999, 999999, 9999999};
+const char digits[201] =
+        "0001020304050607080910111213141516171819"
+        "2021222324252627282930313233343536373839"
+        "4041424344454647484950515253545556575859"
+        "6061626364656667686970717273747576777879"
+        "8081828384858687888990919293949596979899";
+/***********************************************全局变量****************************************************/
+struct Array{
+    char l3[360000];
+    char l4[7200000];
+    char l5[14400000];
+    char l6[28800000];
+    char l7[57600000];
+}resultArray[THREAD_COUNT];
+struct patchInfo{
+    char* address[5];
+    unsigned int len[5];
+}patchtoThread[PATCH_COUNT];
+unsigned int circntArray[THREAD_COUNT];
+unsigned int Graph[MAX_NODE][MAX_DEGREE];
+unsigned int GraphInv[MAX_NODE][MAX_DEGREE];
+unsigned int nodeID[MAX_NODE]{};
+char Comma[MAX_NODE][11];  //逗号复用
+unsigned int idFlag[MAX_NODE];
+unsigned int inDegree[MAX_NODE];  //入度
+unsigned int outDegree[MAX_NODE];//出度
+unsigned int removeFLag[MAX_NODE];
+unsigned int reachable[THREAD_COUNT][MAX_NODE][8];
+unsigned int midPointP2[THREAD_COUNT][MAX_P2][MAX_P2];
+unsigned long int midPointP3[THREAD_COUNT][MAX_P3][MAX_P2];
+unsigned int que[MAX_NODE]{};
+unsigned int nodeCnt = 0, circleCnt = 0;  //节点数、边数、环数
+char pathCnt[10];
+unsigned int processedId;
+/***********************************************函数****************************************************/
+/**
+ * 数字转字符串
+ * @param num
+ * @param buf
+ * @return
+ */
+unsigned int digits10(unsigned int value)
+{
+    unsigned int i = 0;
+    for (;; ++i) {
+        if (value <= sizeTable[i]) {
+            ++i;
+            break;
+        }
+    }
+    return i;
+}
+unsigned int intToString(unsigned int value, char *dst)
+{
+    unsigned int const length = digits10(value);
+    unsigned int next = length - 1;
+    while (value >= 100) {
+        const int i = (value % 100) * 2;
+        value /= 100;
+        dst[next] = digits[i + 1];
+        dst[next - 1] = digits[i];
+        next -= 2;
+    }
+    // Handle last 1-2 digits
+    if (value < 10) {
+        dst[next] = '0' + (unsigned int)(value);
+    } else {
+        const int i = (unsigned int)(value) * 2;
+        dst[next] = digits[i + 1];
+        dst[next - 1] = digits[i];
+    }
+    return length;
+}
+/**
+ * 增加地图中的一条边
+ * @param u
+ * @param v
+ * @param w
+ */
+void addEdge(unsigned int u, unsigned int v) {
+    Graph[u][outDegree[u]] = v;
+    ++inDegree[v];
+    ++outDegree[u];
+}
+/**
+ * 从输入文件中读取数据并构建地图
+ */
+void readData(char *inputFilePath) {
+    //mmap映射文件
+    int fd = open(inputFilePath, O_RDONLY);
+    unsigned int fileLen = lseek(fd, 0, SEEK_END);
+    char *buf = (char *) mmap(NULL, fileLen, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    unsigned int preNum=0; //记录输入的数字,避免使用push_back以提升性能
+    unsigned int curNum = 0;//当前记录的数字
+    unsigned int len,i=0;
+    while(fileLen) {
+        char c = buf[i++];
+        if (c > '/'){
+            curNum = curNum * 10 + c - '0';}
+        else{
+            buf+=i;fileLen-=i;
+            i=0;
+            if(preNum){
+                idFlag[preNum] = 1;
+                idFlag[curNum + 1] = 1;
+                addEdge(preNum, curNum + 1);
+                preNum=0;
+                while(buf[i++] != '\n');
+                buf+=i;fileLen-=i;i=0;
+            }else preNum = curNum + 1;
+            curNum=0;
+        }
+    }
+    for (i = 1; i < MAX_NODE; ++i) {
+        if (idFlag[i]) {
+            nodeID[nodeCnt++] = i;
+        }
+    }
+    for (i = 0; i < nodeCnt; ++i) {
+        unsigned int &t = nodeID[i];
+        len = intToString(t - 1, Comma[t]+1 );
+        Comma[t][len + 1] = ',';
+        Comma[t][0] = (char) ++len;
+    }
+}
+void preProcessing() {
+    unsigned int pFront = 0, pEnd = 0, i, j;
+    for (i = 0; i < nodeCnt; i++) {
+        unsigned int &node = nodeID[i];
+        if (!inDegree[node])
+            que[pEnd++] = node;
+    }
+    while (pFront < pEnd) {
+        unsigned int &u = que[pFront++];
+        unsigned int &outSize = outDegree[u];
+        for (i = 0; i < outSize; ++i) {
+            unsigned int &v = Graph[u][i];
+            if (0 == --inDegree[v]) {
+                que[pEnd++] = v;
+            }
+        }
+        outDegree[u] = 0;
+    }
+    memset(inDegree, 0, sizeof(inDegree));
+    for (i = 0; i < nodeCnt; i++) {
+        unsigned int &node = nodeID[i];
+        sort(Graph[node], Graph[node] + outDegree[node]);
+        for (j = 0; j < outDegree[node]; j++) {
+            unsigned int &next = Graph[node][j];
+            GraphInv[next][inDegree[next]++] = node;
+        }
+    }
+    for(i=0;i<nodeCnt;i++){
+        unsigned int &node = nodeID[i];
+        if(!inDegree[node]||!outDegree[node]){
+            removeFLag[node]=1;
+        }
+    }
+}
+unsigned int smallMapBuild(unsigned int begin,unsigned int threadId) {
+    if(Graph[begin][outDegree[begin]-1]<begin||GraphInv[begin][inDegree[begin]-1]<begin){
+        return -1;
+    }
+    unsigned int iter1, iter2, iter3, add, addressP2 = 0, addressP3 = 0;
+    unsigned int idP2[MAX_P2], pointP2 = 0;
+    unsigned long int s;
+    unsigned int flagP3 = 0;
+    for (iter1 = 0; iter1 < inDegree[begin]; ++iter1) {
+        unsigned int &mid = GraphInv[begin][iter1];
+        if (mid <= begin||removeFLag[mid]) continue;
+        reachable[threadId][mid][1] = begin;
+        for (iter2 = 0; iter2 < inDegree[mid]; ++iter2) {
+            unsigned int &next = GraphInv[mid][iter2];
+            if (next <= begin||removeFLag[next]) continue;
+            if (reachable[threadId][next][2] != begin) {
+                idP2[pointP2++] = next;
+                reachable[threadId][next][2] = begin;
+                reachable[threadId][next][4] = addressP2++;
+                reachable[threadId][next][5] = 0;
+            }
+            add = reachable[threadId][next][4];
+            midPointP2[threadId][add][reachable[threadId][next][5]++] = mid;
+        }
+    }
+    if (pointP2 == 0) {
+        return -1;
+    } else {
+        //p2排序
+        sort(idP2, idP2 + pointP2);
+        //P2求P3
+        for (iter1 = 0; iter1 < pointP2; ++iter1) {
+            unsigned int &next = idP2[iter1];
+            addressP2 = reachable[threadId][next][4];
+            for (iter2 = 0; iter2 < reachable[threadId][next][5]; ++iter2) {
+                unsigned int &mid = midPointP2[threadId][addressP2][iter2];
+                for (iter3 = 0; iter3 < inDegree[next]; iter3++) {
+                    unsigned int &end = GraphInv[next][iter3];
+                    if (end <= begin || mid == end||removeFLag[end]) continue;
+                    if (reachable[threadId][end][3] != begin) {
+                        flagP3 = 1;
+                        reachable[threadId][end][3] = begin;
+                        reachable[threadId][end][6] = addressP3++;
+                        reachable[threadId][end][7] = 0;
+                    }
+                    add = reachable[threadId][end][6];
+                    s = next;
+                    s = (s << u32) | mid;
+                    midPointP3[threadId][add][reachable[threadId][end][7]++] = s;
+                }
+            }
+        }
+    }
+    return flagP3;
+}
+mutex mtx;
+void searchResult(unsigned int threadId) {
+    unsigned int patchSize = nodeCnt/PATCH_COUNT, last_patch = 0;
+    unsigned char vis[262144] = {};
+    char *resultPosition[5]{};
+    char *resultPositionLast[5]{resultArray[threadId].l3,resultArray[threadId].l4,resultArray[threadId].l5,
+                                resultArray[threadId].l6,resultArray[threadId].l7};
+    //线程循环
+    while(true){
+        mtx.lock();
+        unsigned int patchId = processedId++;
+        mtx.unlock();
+        if(patchId >= PATCH_COUNT) return;
+        unsigned int i, startId = patchId*patchSize, endId;
+        if(patchId == PATCH_COUNT-1)
+            endId = nodeCnt;
+        else
+            endId = (patchId+1)*patchSize;
+        for(i = last_patch; i < startId; ++i){
+            vis[nodeID[i]] |= u1;
+        }
+        for(i = 0;i < 5;i++)
+            resultPosition[i] = resultPositionLast[i];
+        for (i = startId; i < endId; ++i) {
+            unsigned int &begin = nodeID[i];
+            //这里强制标注一次，可以省略next和begin的判断
+            vis[begin] |= u1;
+            unsigned int flagP3;
+            if (removeFLag[begin]) continue;   //零度节点
+            flagP3 = smallMapBuild(begin,threadId);
+            if (flagP3==-1) continue;   //没有P1或者P2
+            //DFS
+            unsigned int now = begin;
+            uint8_t depth = 1;
+            unsigned int path[7] = {begin};
+            char pathStr[128];memcpy(pathStr,Comma[begin]+1,16);
+            unsigned int pathStrPos[7]{};pathStrPos[0]=Comma[begin][0];
+            unsigned int pt[7]{};
+            unsigned int ii = 0;
+            while (depth) {
+                L1:
+                unsigned int *gCur = Graph[now];
+                unsigned int &q = outDegree[now];
+                unsigned int &ptNow = pt[depth];
+                vis[now] |= u1;
+                //普通情况
+                if (depth > 2) {
+                    if (ptNow == 0 && reachable[threadId][now][1] == begin) {
+                        unsigned int pathStrLen =pathStrPos[depth-1];
+                        pathStr[pathStrLen-1]='\n';
+                        memcpy(resultPosition[depth-3],pathStr,16);
+                        memcpy(resultPosition[depth-3]+16,pathStr+16,16);
+                        resultPosition[depth-3]+=pathStrLen;pathStr[pathStrLen-1]=',';
+                        ++circntArray[threadId];
+                    }
+                }
+                // 遍历邻域
+                while (ptNow < q) {
+                    unsigned int &next = gCur[ptNow++];
+                    if (depth == 3 && flagP3 == 0)
+                        break;
+                    if (0 == vis[next]) {
+                        if (depth < 4) {
+                            path[depth] = next;memcpy(pathStr+pathStrPos[depth-1],Comma[next]+1,16);
+                            pathStrPos[depth]=pathStrPos[depth-1]+Comma[next][0];
+                            depth++;
+                            now = next;
+                            goto L1;
+                        } else {
+                            if (reachable[threadId][next][1] == begin) {
+                                memcpy(resultPosition[2],pathStr,16);
+                                memcpy(resultPosition[2]+16,pathStr+16,16);
+                                memcpy(resultPosition[2]+32,pathStr+32,16);
+                                resultPosition[2]+=pathStrPos[3];
+                                memcpy(resultPosition[2],Comma[next]+1,16);
+                                resultPosition[2]+=Comma[next][0];
+                                *(resultPosition[2]-1)='\n';
+                                ++circntArray[threadId];
+                            }
+                            if (reachable[threadId][next][2] == begin) {
+                                unsigned int *nextCollctions = midPointP2[threadId][reachable[threadId][next][4]];
+                                unsigned int &len = reachable[threadId][next][5];
+                                path[4] = next;memcpy(pathStr+pathStrPos[3],Comma[next]+1,16);
+                                pathStrPos[4]=pathStrPos[3]+Comma[next][0];
+                                for (ii = 0; ii < len; ++ii) {
+                                    unsigned int end = nextCollctions[ii];
+                                    if (vis[end]) continue;
+                                    memcpy(resultPosition[3],pathStr,16);
+                                    memcpy(resultPosition[3]+16,pathStr+16,16);
+                                    resultPosition[3]+=pathStrPos[4];
+                                    memcpy(resultPosition[3],Comma[end]+1,16);
+                                    resultPosition[3]+=Comma[end][0];
+                                    *(resultPosition[3]-1)='\n';
+                                    ++circntArray[threadId];
+                                }
+                            }
+                            if (reachable[threadId][next][3] == begin) {
+                                unsigned long int *nextCollctions = midPointP3[threadId][reachable[threadId][next][6]];
+                                unsigned int &len = reachable[threadId][next][7];
+                                path[4] = next;memcpy(pathStr+pathStrPos[3],Comma[next]+1,16);
+                                pathStrPos[4]=pathStrPos[3]+Comma[next][0];
+                                for (ii = 0; ii < len; ++ii) {
+                                    unsigned int next1 = nextCollctions[ii], next2 = nextCollctions[ii] >> u32;
+                                    if (vis[next1] || vis[next2]) continue;
+                                    memcpy(resultPosition[4],pathStr,16);
+                                    memcpy(resultPosition[4]+16,pathStr+16,16);
+                                    resultPosition[4]+=pathStrPos[4];
+                                    memcpy(resultPosition[4],Comma[next2]+1,16);
+                                    resultPosition[4]+=Comma[next2][0];
+                                    memcpy(resultPosition[4],Comma[next1]+1,16);
+                                    resultPosition[4]+=Comma[next1][0];
+                                    *(resultPosition[4]-1)='\n';
+                                    ++circntArray[threadId];
+                                }
+                            }
+                            vis[next] >>= u1;
+                        }
+                    }
+                }
+                if (ptNow == q) {
+                    if (depth == 1)
+                        break;
+                    ptNow = 0;
+                    vis[now] >>= u1;
+                    now = path[--depth - 1];
+                }
+            }
+        }
+        for(i =0;i<5;i++){
+            patchtoThread[patchId].address[i] = resultPositionLast[i];
+            patchtoThread[patchId].len[i] = resultPosition[i]-resultPositionLast[i];
+            resultPositionLast[i] = resultPosition[i];
+        }
+        last_patch = endId;
+    }
+}
+///**
+// * 写入文件
+// * @param outputFilePath
+// */
+static void writeResult(char* outputFilePath) {
+    for(unsigned int t=0;t<THREAD_COUNT;++t){
+        circleCnt+=circntArray[t];
+    }
+    unsigned int pathCntSize = intToString(circleCnt,pathCnt);
+    pathCnt[pathCntSize++]='\n';
+    int file_fd = open(outputFilePath, O_WRONLY | O_CREAT, 00666);
+    write(file_fd,pathCnt,pathCntSize);
+    for(unsigned int k=0;k<5;++k) {
+        for(unsigned int patch=0;patch<PATCH_COUNT;++patch) {
+            if(patchtoThread[patch].len[k])
+                write(file_fd,patchtoThread[patch].address[k],patchtoThread[patch].len[k]);
+        }
+    }
+    close(file_fd);
+}
+
+int main() {
+//    char *inputFilePath = (char *) "../100w.txt";
+//    char *outputFilePath = (char *) "../result.txt";
+    char* inputFilePath = (char*)"/data/test_data.txt";
+    char* outputFilePath = (char*)"/projects/student/result.txt";
+    readData(inputFilePath);
+    preProcessing();
+    std::thread threads[THREAD_COUNT-1];
+    int t=0;
+    for (t = 0; t < THREAD_COUNT-1; t++) {
+        threads[t] = std::thread(searchResult, t);
+    }
+    searchResult(t);
+    for (t = 0; t < THREAD_COUNT-1; t++) {
+        threads[t].join();
+    }
+    writeResult(outputFilePath);
+    sleep(5);
+    exit(0);
+}
